@@ -1,0 +1,22 @@
+name: NeoBet API Test Run
+
+on:
+  workflow_dispatch: # Erlaubt manuellen Start per Klick
+
+jobs:
+  run-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Code auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Pakete installieren
+        run: pip install httpx supabase curl_cffi numpy
+
+      - name: Test ausführen
+        run: python debug_raw.py
