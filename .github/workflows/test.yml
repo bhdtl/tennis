@@ -1,7 +1,7 @@
 name: NeoBet API Test Run
 
 on:
-  workflow_dispatch: # Erlaubt manuellen Start per Klick
+  workflow_dispatch:
 
 jobs:
   run-test:
@@ -19,4 +19,7 @@ jobs:
         run: pip install httpx supabase curl_cffi numpy
 
       - name: Test ausführen
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: python test_run.py
