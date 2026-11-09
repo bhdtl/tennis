@@ -7,16 +7,24 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Spalten-Mapping für Supabase
-COLUMNS = [
-    'tourney_id', 'tourney_name', 'surface', 'tourney_date', 'match_num',
-    'winner_id', 'winner_name', 'winner_hand', 'winner_ht', 'winner_ioc', 'winner_age',
-    'loser_id', 'loser_name', 'loser_hand', 'loser_ht', 'loser_ioc', 'loser_age',
-    'score', 'best_of', 'round', 'minutes',
-    'w_ace', 'w_df', 'w_svpt', 'w_1stIn', 'w_1stWon', 'w_2ndWon', 'w_SvGms', 'w_bpSaved', 'w_bpFaced',
-    'l_ace', 'l_df', 'l_svpt', 'l_1stIn', 'l_1stWon', 'l_2ndWon', 'l_SvGms', 'l_bpSaved', 'l_bpFaced',
-    'winner_rank', 'winner_rank_points', 'loser_rank', 'loser_rank_points'
-]
+# Wir mappen alle Spalten explizit auf Kleinbuchstaben für Supabase
+COLUMNS_MAP = {
+    'tourney_id': 'tourney_id', 'tourney_name': 'tourney_name', 'surface': 'surface', 
+    'tourney_date': 'tourney_date', 'match_num': 'match_num',
+    'winner_id': 'winner_id', 'winner_name': 'winner_name', 'winner_hand': 'winner_hand', 
+    'winner_ht': 'winner_ht', 'winner_ioc': 'winner_ioc', 'winner_age': 'winner_age',
+    'loser_id': 'loser_id', 'loser_name': 'loser_name', 'loser_hand': 'loser_hand', 
+    'loser_ht': 'loser_ht', 'loser_ioc': 'loser_ioc', 'loser_age': 'loser_age',
+    'score': 'score', 'best_of': 'best_of', 'round': 'round', 'minutes': 'minutes',
+    'w_ace': 'w_ace', 'w_df': 'w_df', 'w_svpt': 'w_svpt', 'w_1stIn': 'w_1stin', 
+    'w_1stWon': 'w_1stwon', 'w_2ndWon': 'w_2ndwon', 'w_SvGms': 'w_svgms', 
+    'w_bpSaved': 'w_bpsaved', 'w_bpFaced': 'w_bpfaced',
+    'l_ace': 'l_ace', 'l_df': 'l_df', 'l_svpt': 'l_svpt', 'l_1stIn': 'l_1stin', 
+    'l_1stWon': 'l_1stwon', 'l_2ndWon': 'l_2ndwon', 'l_SvGms': 'l_svgms', 
+    'l_bpSaved': 'l_bpsaved', 'l_bpFaced': 'l_bpfaced',
+    'winner_rank': 'winner_rank', 'winner_rank_points': 'winner_rank_points', 
+    'loser_rank': 'loser_rank', 'loser_rank_points': 'loser_rank_points'
+}
 
 def clean_record(val):
     if pd.isna(val) or val is None:
@@ -40,8 +48,9 @@ def import_atp_year(year: int):
     records = []
     for _, row in df.iterrows():
         item = {}
-        for col in COLUMNS:
-            item[col] = clean_record(row.get(col))
+        for csv_col, db_col in COLUMNS_MAP.items():
+            if csv_col in row:
+                item[db_col] = clean_record(row.get(csv_col))
         records.append(item)
 
     # In 300er Batches hochladen
@@ -50,13 +59,11 @@ def import_atp_year(year: int):
         batch = records[i:i + batch_size]
         try:
             supabase.table("historical_atp_matches").upsert(batch, on_conflict="tourney_id,match_num").execute()
-            print(f"  📦 Batch {i // batch_size + 1}/{len(records)//batch_size + 1} hochgeladen")
         except Exception as e:
             print(f"  ❌ Fehler bei Batch: {e}")
 
-    print(f"✅ Jahr {year} komplett importiert!\n")
+    print(f"✅ Jahr {year} erfolgreich importiert!\n")
 
 if __name__ == "__main__":
-    # Importiere z.B. die letzten Jahre
     for year in range(2023, 2027):
         import_atp_year(year)
