@@ -94,7 +94,7 @@ class NeoBetAPI:
         log(f"✅ [NEO.BET API] Ingestion completed. Total {label} matches in cache: {len(all_raw)}")
         return all_raw
 
-    async def get_fixtures(self, date_str: str, include_ended: bool = False) -> List[Dict[str, Any]]:
+    async def get_fixtures(self, date_str: Optional[str] = None, include_ended: bool = False) -> List[Dict[str, Any]]:
         """
         Fetches active/ended Tennis matches from NEO.bet and translates them 
         into standard fixture dictionaries expected by the scraper.
@@ -119,9 +119,9 @@ class NeoBetAPI:
             if not include_ended and status_name in ["Ended", "EndedRetired", "Canceled", "Aborted"]:
                 continue
             
-            # Filter out Outright and Live matches unless we are settling ended results
+            # Filter out Outright matches (allow PreMatch and Regular)
             trading_type = match.get("tradingType", "PreMatch")
-            if not include_ended and trading_type != "PreMatch":
+            if not include_ended and trading_type not in ["PreMatch", "Regular"]:
                 continue
             
             home_raw = match.get("home", "")
@@ -151,18 +151,18 @@ class NeoBetAPI:
             
             # Parse begin date & time
             begin_str = match.get("begin", "")
-            event_date = date_str  # fallback
+            event_date = date_str if date_str else "2026-01-01"  # fallback
             event_time = "00:00"
             if begin_str:
                 try:
+                    event_date = begin_str.split("T")[0]
                     dt = datetime.strptime(begin_str.replace("Z", "+00:00"), "%Y-%m-%dT%H:%M:%S%z")
-                    event_date = dt.strftime("%Y-%m-%d")
                     event_time = dt.strftime("%H:%M")
                 except Exception as date_err:
                     pass
             
-            # Only include matches starting on the target date string
-            if event_date != date_str:
+            # Only include matches starting on the target date string if date_str is explicitly provided
+            if date_str and event_date != date_str:
                 continue
             
             # Parse winner and scores for ended/finished matches
@@ -226,7 +226,7 @@ class NeoBetAPI:
             # Parse and cache odds for get_odds calls
             self._cache_match_odds(match_id, match)
             
-        log(f"✅ [NEO.BET API] Map matching completed: {len(fixtures)} relevant fixtures for {date_str}.")
+        log(f"✅ [NEO.BET API] Map matching completed: {len(fixtures)} relevant fixtures.")
         return fixtures
 
     def _cache_match_odds(self, match_id: str, match_data: Dict[str, Any]):
