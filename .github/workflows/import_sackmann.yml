@@ -1,0 +1,29 @@
+name: Import Sackmann ATP Data
+
+on:
+  workflow_dispatch: # Ermöglicht das manuelle Starten über den Actions-Tab
+
+jobs:
+  import-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Code auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Abhängigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy supabase requests
+
+      - name: Import-Skript ausführen
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python import_sackmann.py
