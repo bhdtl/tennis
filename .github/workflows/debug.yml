@@ -1,4 +1,4 @@
-name: NeoBet API Test Run
+name: NeoBet API Debug
 
 on:
   workflow_dispatch: # Erlaubt manuellen Start per Klick
