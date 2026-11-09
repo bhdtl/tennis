@@ -7,12 +7,40 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# Konfiguration für Value-Erkennung
-MIN_MATCHES_REQUIRED = 5     # Spieler muss mind. 5 Matches in der DB haben
-MIN_EDGE_THRESHOLD = 0.075   # Mindestens 7.5% Erwartungswert (+EV) für einen echten Pick
+# Konfiguration
+MIN_MATCHES_ON_SURFACE = 3     # Mindestanzahl Matches auf dem Belag für eine Wertung
+MIN_EDGE_THRESHOLD = 0.075     # Mindestens 7.5% Erwartungswert (+EV)
+MAX_EDGE_THRESHOLD = 0.60      # Obergrenze bei 60% (schützt vor Daten-Outlier)
+
+def get_surface_from_supabase(tournament_name: str) -> str:
+    """Sucht in Supabase dynamisch nach dem historischen Belag des Turniers."""
+    clean_name = tournament_name.replace("Challenger ", "").replace(" Men", "").replace(" Women", "").strip()
+    
+    try:
+        res = supabase.table("historical_atp_matches") \
+            .select("surface") \
+            .ilike("tourney_name", f"%{clean_name}%") \
+            .limit(20) \
+            .execute()
+        
+        if res.data and len(res.data) > 0:
+            surfaces = [r["surface"] for r in res.data if r.get("surface")]
+            if surfaces:
+                return max(set(surfaces), key=surfaces.count)
+    except Exception as e:
+        print(f"⚠️ DB-Abfrage für Turnier-Belag fehlgeschlagen ({tournament_name}): {e}")
+
+    # Fallback-Regeln für komplett neue Turniere
+    name_lower = tournament_name.lower()
+    if any(k in name_lower for k in ["clay", "lima", "buenos aires", "rio", "santiago"]):
+        return "Clay"
+    elif any(k in name_lower for k in ["grass", "wimbledon", "halle"]):
+        return "Grass"
+    
+    return "Hard"  # Standard-Fallback im modernen Profi-Tennis
 
 def devig_odds(odds_a: float, odds_b: float):
-    """Entfernt die Buchmacher-Marge (Vig), um die faire implizite Markt-Wahrscheinlichkeit zu berechnen."""
+    """Entfernt die Buchmacher-Marge (Vig) für die wahre Markt-Wahrscheinlichkeit."""
     if odds_a <= 1.0 or odds_b <= 1.0:
         return 0.5, 0.5
     implied_a = 1.0 / odds_a
@@ -20,44 +48,53 @@ def devig_odds(odds_a: float, odds_b: float):
     total = implied_a + implied_b
     return implied_a / total, implied_b / total
 
-def get_player_stats(player_name: str):
-    """Holt historische Performance-Daten eines Spielers aus der Supabase-Datenbank."""
+def get_player_surface_stats(player_name: str, surface: str):
+    """Holt Performance-Daten eines Spielers strikt gefiltert nach Belag mit Bayesian Smoothing."""
     try:
-        # Als Sieger
-        res_w = supabase.table("historical_atp_matches").select("*").ilike("winner_name", f"%{player_name}%").execute()
+        # Als Sieger auf diesem Belag
+        res_w = supabase.table("historical_atp_matches").select("*") \
+            .ilike("winner_name", f"%{player_name}%") \
+            .eq("surface", surface) \
+            .execute()
         wins = res_w.data if res_w.data else []
 
-        # Als Verlierer
-        res_l = supabase.table("historical_atp_matches").select("*").ilike("loser_name", f"%{player_name}%").execute()
+        # Als Verlierer auf diesem Belag
+        res_l = supabase.table("historical_atp_matches").select("*") \
+            .ilike("loser_name", f"%{player_name}%") \
+            .eq("surface", surface) \
+            .execute()
         losses = res_l.data if res_l.data else []
 
         total_matches = len(wins) + len(losses)
-        if total_matches < MIN_MATCHES_REQUIRED:
-            return None
+        
+        # Bayesian Smoothing: 5 Pseudo-Matches mit 50% Winrate als Prior
+        prior_weight = 5.0
+        prior_winrate = 0.50
+        raw_wins = len(wins)
+        smoothed_win_rate = ((raw_wins + (prior_weight * prior_winrate)) / (total_matches + prior_weight))
 
-        win_rate = len(wins) / total_matches
-
-        # Breakpoint-Performance (Druckresistenz)
+        # Breakpoint-Save-Rate auf diesem Belag
         bp_saved = sum([m.get("w_bpsaved") or 0 for m in wins]) + sum([m.get("l_bpsaved") or 0 for m in losses])
         bp_faced = sum([m.get("w_bpfaced") or 0 for m in wins]) + sum([m.get("l_bpfaced") or 0 for m in losses])
         bp_save_rate = (bp_saved / bp_faced) if bp_faced > 0 else 0.50
 
         return {
             "name": player_name,
+            "surface": surface,
             "matches": total_matches,
-            "win_rate": win_rate,
+            "win_rate": smoothed_win_rate,
             "bp_save_rate": bp_save_rate
         }
     except Exception as e:
-        print(f"⚠️ Fehler beim Abrufen der Stats für {player_name}: {e}")
+        print(f"⚠️ Fehler bei Stats-Abfrage für {player_name} ({surface}): {e}")
         return None
 
 def analyze_value_bets():
     print("🔍 Lade aktuelle Neo.bet Quoten aus Supabase...")
     response = supabase.table("market_odds").select("*").execute()
-    fixtures = response.data if response.data else 0
+    fixtures = response.data if response.data else []
 
-    print(f"📊 {len(fixtures)} Ansetzungen gefunden. Starte Daten-Filter & Modell-Abgleich...\n")
+    print(f"📊 {len(fixtures)} Ansetzungen gefunden. Starte dynamischen Oberflächen- & Value-Abgleich...\n")
 
     value_bets_found = 0
 
@@ -76,18 +113,24 @@ def analyze_value_bets():
         except (KeyError, TypeError, ValueError):
             continue
 
-        # Historische Stats prüfen
-        stats_p1 = get_player_stats(p1)
-        stats_p2 = get_player_stats(p2)
+        # 1. Belag dynamisch aus Supabase auslesen
+        surface = get_surface_from_supabase(tournament)
 
-        # Wenn für einen Spieler zu wenig historische Daten vorliegen -> Überspringen!
+        # 2. Stats gefiltert nach Belag abrufen
+        stats_p1 = get_player_surface_stats(p1, surface)
+        stats_p2 = get_player_surface_stats(p2, surface)
+
         if not stats_p1 or not stats_p2:
             continue
 
-        # Markt-Wahrscheinlichkeiten (ohne Marge)
+        # Filter: Zu wenige Daten auf diesem spezifischen Belag?
+        if stats_p1["matches"] < MIN_MATCHES_ON_SURFACE or stats_p2["matches"] < MIN_MATCHES_ON_SURFACE:
+            continue
+
+        # 3. Markt-Probabilities berechnen (ohne Buchmacher-Marge)
         fair_p1_market, fair_p2_market = devig_odds(p1_odds, p2_odds)
 
-        # Modell-Berechnung (Kombination aus Win-Rate und Save-Rate)
+        # 4. Modell-Score auf Oberflächen-Basis
         score_p1 = (stats_p1["win_rate"] * 0.7) + (stats_p1["bp_save_rate"] * 0.3)
         score_p2 = (stats_p2["win_rate"] * 0.7) + (stats_p2["bp_save_rate"] * 0.3)
         total_score = score_p1 + score_p2
@@ -98,28 +141,28 @@ def analyze_value_bets():
         model_prob_p1 = score_p1 / total_score
         model_prob_p2 = score_p2 / total_score
 
-        # Erwartungswert (+EV) berechnen
+        # 5. Erwartungswert (+EV)
         ev_p1 = (model_prob_p1 * p1_odds) - 1
         ev_p2 = (model_prob_p2 * p2_odds) - 1
 
-        # Nur ausgeben, wenn der Edge den Schwellenwert (z.B. 7.5%) überschreitet
-        if ev_p1 >= MIN_EDGE_THRESHOLD:
+        # 6. Strenger Filter (EV zwischen 7.5% und 60%)
+        if MIN_EDGE_THRESHOLD <= ev_p1 <= MAX_EDGE_THRESHOLD:
             value_bets_found += 1
-            print(f"🎯 [VALUE FOUND] @ {tournament}")
+            print(f"🎯 [VALUE FOUND] @ {tournament} (Belag: {surface})")
             print(f"   Match: {p1} vs {p2}")
             print(f"   👉 EMPFEHLUNG: {p1} (Quote: {p1_odds})")
-            print(f"   Modell-Wahrscheinlichkeit: {model_prob_p1:.1%} | Markt-Implied: {fair_p1_market:.1%}")
+            print(f"   Modell ({surface}): {model_prob_p1:.1%} | Markt: {fair_p1_market:.1%}")
             print(f"   Erwartungswert (EV): +{ev_p1:.1%}\n")
 
-        elif ev_p2 >= MIN_EDGE_THRESHOLD:
+        elif MIN_EDGE_THRESHOLD <= ev_p2 <= MAX_EDGE_THRESHOLD:
             value_bets_found += 1
-            print(f"🎯 [VALUE FOUND] @ {tournament}")
+            print(f"🎯 [VALUE FOUND] @ {tournament} (Belag: {surface})")
             print(f"   Match: {p1} vs {p2}")
             print(f"   👉 EMPFEHLUNG: {p2} (Quote: {p2_odds})")
-            print(f"   Modell-Wahrscheinlichkeit: {model_prob_p2:.1%} | Markt-Implied: {fair_p2_market:.1%}")
+            print(f"   Modell ({surface}): {model_prob_p2:.1%} | Markt: {fair_p2_market:.1%}")
             print(f"   Erwartungswert (EV): +{ev_p2:.1%}\n")
 
-    print(f"🏁 Analyse beendet. {value_bets_found} echte Value Bets über dem Schwellenwert von {MIN_EDGE_THRESHOLD*100}% gefunden.")
+    print(f"🏁 Analyse beendet. {value_bets_found} qualifizierte Value Bets auf Oberflächen-Basis gefunden.")
 
 if __name__ == "__main__":
     analyze_value_bets()
