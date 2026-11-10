@@ -1,29 +1,25 @@
 name: Evaluate Value Bets
 
 on:
-  workflow_dispatch: # Manuelles Ausführen über den Actions-Tab
+  workflow_dispatch:
   schedule:
-    - cron: '0 */4 * * *' # Läuft automatisch alle 4 Stunden (optional)
+    - cron: '*/30 * * * *'  # Läuft automatisch alle 30 Minuten rund um die Uhr
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Code auschecken
-        uses: actions/checkout@v4
-
-      - name: Python einrichten
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Abhängigkeiten installieren
+      - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install pandas numpy supabase requests
 
-      - name: Value-Bet-Analyse ausführen
+      - name: Run Value Engine
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
