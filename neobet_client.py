@@ -43,6 +43,7 @@ class NeoBetAPI:
         label = "settlement/ended" if is_settlement else "active"
         log(f"📡 [NEO.BET API] Ingesting full {label} Tennis program in paging chunks...")
         all_raw = []
+        seen_ids = set()
         updated_after = 0
         keep_fetching = True
         pages = 0
@@ -69,18 +70,25 @@ class NeoBetAPI:
                 if not isinstance(data, list) or len(data) == 0:
                     break
                     
-                all_raw.extend(data)
-                log(f"📦 [NEO.BET API] Page {pages}: Fetched {len(data)} matches (Total: {len(all_raw)}).")
+                new_items = 0
+                for match in data:
+                    m_id = match.get("id")
+                    if m_id and m_id not in seen_ids:
+                        seen_ids.add(m_id)
+                        all_raw.append(match)
+                        new_items += 1
+                        
+                log(f"📦 [NEO.BET API] Page {pages}: Fetched {len(data)} matches ({new_items} new, Total unique: {len(all_raw)}).")
                 
-                # Find maximum lastUpdated to paginate
+                # Check maximum lastUpdated to paginate
                 max_updated = updated_after
                 for match in data:
                     m_updated = match.get("lastUpdated", 0)
                     if m_updated > max_updated:
                         max_updated = m_updated
                 
-                # If we fetched fewer than 50, we have reached the end of the stream
-                if len(data) < 50 or max_updated == updated_after:
+                # If we fetched fewer than 50 or no new items were found, we reached the end
+                if len(data) < 50 or max_updated <= updated_after or new_items == 0:
                     keep_fetching = False
                 else:
                     updated_after = max_updated
@@ -151,17 +159,19 @@ class NeoBetAPI:
             
             # Parse begin date & time
             begin_str = match.get("begin", "")
-            event_date = date_str if date_str else "2026-01-01"  # fallback
+            event_date = date_str if date_str else datetime.now().strftime("%Y-%m-%d")
             event_time = "00:00"
-            if begin_str:
+            if begin_str and "T" in begin_str:
+                event_date = begin_str.split("T")[0]
+                time_raw = begin_str.split("T")[1].replace("Z", "")
+                event_time = time_raw[:5]
                 try:
-                    event_date = begin_str.split("T")[0]
                     dt = datetime.strptime(begin_str.replace("Z", "+00:00"), "%Y-%m-%dT%H:%M:%S%z")
                     event_time = dt.strftime("%H:%M")
-                except Exception as date_err:
+                except Exception:
                     pass
             
-            # Only include matches starting on the target date string if date_str is explicitly provided
+            # Only filter by date if date_str is explicitly provided; otherwise keep all active/future dates
             if date_str and event_date != date_str:
                 continue
             

@@ -4,24 +4,29 @@ from datetime import datetime
 from supabase import create_client, Client
 from neobet_client import NeoBetAPI
 
-# Supabase Verbindung herstellen
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-async def main():
-    print("🚀 Starte Neo.bet Sync zu Supabase...")
+async def sync_neobet_to_supabase() -> int:
+    """
+    Scrapt alle aktuellen und zukünftigen Tennis-Matches aus dem Neo.bet Programm
+    und synchronisiert Quoten & Ansetzungen in die Supabase Tabelle 'market_odds'.
+    """
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("⚠️ SUPABASE_URL oder SUPABASE_KEY nicht gesetzt. Überspringe Sync.")
+        return 0
+
+    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    print("🚀 Starte Neo.bet Multi-Day Sync zu Supabase...")
     api = NeoBetAPI()
     
-    # 1. Hole alle aktuellen Matches über den Client
+    # Hole alle Matches (heute + zukünftige Spieltage)
     fixtures = await api.get_fixtures()
     print(f"✅ {len(fixtures)} Matches von Neo.bet geladen.")
     
-    # 2. Speichere jedes Match in Supabase
+    synced_count = 0
     for fix in fixtures:
         match_id = fix["event_key"]
-        
-        # Hole die zugehörigen Quoten aus dem Cache des Clients
         odds = await api.get_odds(match_id) or {}
         
         payload = {
@@ -39,12 +44,16 @@ async def main():
         }
         
         try:
-            # Upsert in Supabase (aktualisiert, falls event_key schon existiert)
             supabase.table("market_odds").upsert(payload, on_conflict="event_key").execute()
+            synced_count += 1
         except Exception as e:
             print(f"❌ Fehler beim Speichern von {match_id}: {e}")
 
-    print("🎉 Alle Matches erfolgreich in Supabase synchronisiert!")
+    print(f"🎉 {synced_count} Matches erfolgreich in Supabase synchronisiert!")
+    return synced_count
+
+async def main():
+    await sync_neobet_to_supabase()
 
 if __name__ == "__main__":
     asyncio.run(main())

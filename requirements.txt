@@ -1,1 +1,6 @@
-pip install datasets
+pandas
+numpy
+supabase
+requests
+httpx
+curl_cffi

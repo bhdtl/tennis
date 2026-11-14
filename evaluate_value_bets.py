@@ -1,8 +1,10 @@
 import os
+import asyncio
 import pandas as pd
 import numpy as np
 from datetime import datetime, timezone
 from supabase import create_client, Client
+from test_run import sync_neobet_to_supabase
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY")
@@ -104,6 +106,13 @@ def analyze_value_bets():
         tournament = match.get("tournament_name", "Unbekanntes Turnier")
         event_date = match.get("event_date", today_str)
         event_time = match.get("event_time", "")
+        match_date_str = str(event_date)[:10] if event_date else today_str
+
+        # Überspringe bereits vergangene Spiele
+        if match_date_str < today_str:
+            continue
+
+        is_opening = match_date_str > today_str
         odds_data = match.get("neobet_match_winner", {})
 
         if not odds_data or "Home" not in odds_data or "Away" not in odds_data:
@@ -154,8 +163,9 @@ def analyze_value_bets():
 
         if chosen_pick:
             pick_name, odds, model_prob, market_prob, ev = chosen_pick
-            print(f"🎯 [VALUE FOUND] @ {tournament} (Belag: {surface})")
-            print(f"   Match: {p1} vs {p2}")
+            line_tag = " [⚡ OPENING LINE]" if is_opening else ""
+            print(f"🎯 [VALUE FOUND]{line_tag} @ {tournament} (Belag: {surface})")
+            print(f"   Match ({match_date_str}): {p1} vs {p2}")
             print(f"   👉 EMPFEHLUNG: {pick_name} (Quote: {odds})")
             print(f"   Modell ({surface}): {model_prob:.1%} | Markt: {market_prob:.1%}")
             print(f"   Erwartungswert (EV): +{ev:.1%}\n")
@@ -164,7 +174,7 @@ def analyze_value_bets():
                 "event_key": str(event_key),
                 "tournament_name": tournament,
                 "surface": surface,
-                "event_date": str(event_date)[:10] if event_date else today_str,
+                "event_date": match_date_str,
                 "event_time": str(event_time),
                 "player_home": p1,
                 "player_away": p2,
@@ -172,7 +182,8 @@ def analyze_value_bets():
                 "odds": odds,
                 "model_prob": round(model_prob, 4),
                 "market_prob": round(market_prob, 4),
-                "expected_value": round(ev, 4)
+                "expected_value": round(ev, 4),
+                "is_opening_line": is_opening
             })
 
     # In Supabase speichern für das Vercel-Dashboard
@@ -187,9 +198,19 @@ def analyze_value_bets():
             
             if not existing.data:
                 supabase.table("value_signals").insert(signal).execute()
+            else:
+                signal_id = existing.data[0]["id"]
+                supabase.table("value_signals").update(signal).eq("id", signal_id).execute()
         print("✅ Speichern abgeschlossen!")
     else:
         print("ℹ️ Keine neuen Value Bets gefunden.")
 
 if __name__ == "__main__":
+    # 1. Quoten von Neo.bet für heute und Folgetage syncen
+    try:
+        asyncio.run(sync_neobet_to_supabase())
+    except Exception as sync_err:
+        print(f"⚠️ Live-Sync fehlgeschlagen ({sync_err}), fahre mit vorhandenen Daten fort...")
+
+    # 2. Value Bets berechnen
     analyze_value_bets()

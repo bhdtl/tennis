@@ -17,11 +17,12 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy supabase requests
+          pip install -r requirements.txt
 
-      - name: Run Value Engine
+      - name: Sync NeoBet & Evaluate Value Engine
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
+          python test_run.py
           python evaluate_value_bets.py
