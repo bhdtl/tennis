@@ -87,7 +87,7 @@ def get_player_surface_stats(player_name: str, surface: str):
         print(f"⚠️ Fehler bei Stats-Abfrage für {player_name} ({surface}): {e}")
         return None
 
-def analyze_and_save_value_bets():
+def analyze_value_bets():
     print("🔍 Lade aktuelle Neo.bet Quoten aus Supabase (ungefiltert)...")
     response = supabase.table("market_odds").select("*").execute()
     fixtures = response.data if response.data else []
