@@ -12,7 +12,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 MIN_MATCHES_ON_SURFACE = 3
 MIN_EDGE_THRESHOLD = 0.075     # 7.5% Mindest-EV
 MAX_EDGE_THRESHOLD = 0.60      # Max 60% (Schutz vor Outlier)
-DAYS_AHEAD = 10                # Schaue bis zu 10 Tage in die Zukunft für Opening Lines
+DAYS_AHEAD = 10                # Bis zu 10 Tage in die Zukunft blicken
 
 def get_surface_from_supabase(tournament_name: str) -> str:
     clean_name = tournament_name.replace("Challenger ", "").replace(" Men", "").replace(" Women", "").strip()
@@ -80,23 +80,31 @@ def get_player_surface_stats(player_name: str, surface: str):
 def analyze_and_save_value_bets():
     now_utc = datetime.now(timezone.utc)
     today_str = now_utc.strftime("%Y-%m-%d")
-    future_date = (now_utc + timedelta(days=DAYS_AHEAD)).strftime("%Y-%m-%d")
+    max_future_date = (now_utc + timedelta(days=DAYS_AHEAD)).strftime("%Y-%m-%d")
     
-    print(f"⏰ Starte Value-Check für die nächsten {DAYS_AHEAD} Tage (Von {today_str} bis {future_date})...")
+    print(f"⏰ Starte Value-Check ab Heute ({today_str}) bis max. in {DAYS_AHEAD} Tagen ({max_future_date})...")
 
-    # WICHTIG: Lade alle Matches im Zeitfenster von heute bis in 10 Tagen!
+    # SICHERER WEG: Lade alle Matches ab heute (genau wie beim funktionierenden Code)
     response = supabase.table("market_odds") \
         .select("*") \
         .gte("event_date", today_str) \
-        .lte("event_date", future_date) \
         .execute()
     
-    fixtures = response.data if response.data else []
-    print(f"📊 {len(fixtures)} Ansetzungen im {DAYS_AHEAD}-Tage-Fenster aus Supabase geladen.")
+    raw_fixtures = response.data if response.data else []
+    print(f"📊 {len(raw_fixtures)} rohe Ansetzungen ab heute aus Supabase geladen.")
 
-    if len(fixtures) == 0:
-        print("⚠️ WARNUNG: Keine fixtures in der Tabelle 'market_odds' gefunden! Läuft dein Neo.bet-Scraper aktuell?")
+    if len(raw_fixtures) == 0:
+        print("⚠️ WARNUNG: Keine fixtures in der Tabelle 'market_odds' gefunden!")
         return
+
+    # Python-seitiger Filter für das 10-Tage-Fenster (schützt vor Formatierungsproblemen in Supabase)
+    fixtures = []
+    for match in raw_fixtures:
+        e_date = str(match.get("event_date", ""))[:10] # Nimmt die ersten 10 Zeichen (YYYY-MM-DD)
+        if today_str <= e_date <= max_future_date:
+            fixtures.append(match)
+
+    print(f"🎯 {len(fixtures)} Ansetzungen passen in das exakte 10-Tage-Fenster.")
 
     value_bets_to_insert = []
     skipped_count = 0
@@ -106,7 +114,7 @@ def analyze_and_save_value_bets():
         p1 = match.get("event_first_player")
         p2 = match.get("event_second_player")
         tournament = match.get("tournament_name", "Unbekanntes Turnier")
-        event_date = match.get("event_date")
+        event_date = str(match.get("event_date", ""))[:10]
         event_time = match.get("event_time", "00:00")
         odds_data = match.get("neobet_match_winner", {})
 
@@ -173,9 +181,8 @@ def analyze_and_save_value_bets():
                 "expected_value": round(ev, 4)
             })
 
-    print(f"ℹ️ {skipped_count} Datensätze ohne Quoten oder Historie übersprungen.")
+    print(f"ℹ️ {skipped_count} Datensätze übersprungen.")
 
-    # In Supabase speichern
     if value_bets_to_insert:
         print(f"\n💾 Speichere {len(value_bets_to_insert)} Signale in Supabase...")
         for signal in value_bets_to_insert:
@@ -189,7 +196,7 @@ def analyze_and_save_value_bets():
                 supabase.table("value_signals").insert(signal).execute()
         print("✅ Speichern abgeschlossen!")
     else:
-        print("ℹ️ Keine Value Bets im 10-Tage-Fenster gefunden.")
+        print("ℹ️ Keine Value Bets im aktuellen Fenster gefunden.")
 
 if __name__ == "__main__":
     analyze_and_save_value_bets()
