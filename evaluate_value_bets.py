@@ -1,7 +1,7 @@
 import os
 import pandas as pd
 import numpy as np
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
@@ -12,6 +12,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 MIN_MATCHES_ON_SURFACE = 3
 MIN_EDGE_THRESHOLD = 0.075     # 7.5% Mindest-EV
 MAX_EDGE_THRESHOLD = 0.60      # Max 60% (Schutz vor Outlier)
+DAYS_AHEAD = 10                # Schaue bis zu 10 Tage in die Zukunft für Opening Lines
 
 def get_surface_from_supabase(tournament_name: str) -> str:
     clean_name = tournament_name.replace("Challenger ", "").replace(" Men", "").replace(" Women", "").strip()
@@ -79,18 +80,23 @@ def get_player_surface_stats(player_name: str, surface: str):
 def analyze_and_save_value_bets():
     now_utc = datetime.now(timezone.utc)
     today_str = now_utc.strftime("%Y-%m-%d")
-    current_time_str = now_utc.strftime("%H:%M")
+    future_date = (now_utc + timedelta(days=DAYS_AHEAD)).strftime("%Y-%m-%d")
     
-    print(f"⏰ Starte Value-Check (UTC Jetzt: {today_str} {current_time_str})...")
+    print(f"⏰ Starte Value-Check für die nächsten {DAYS_AHEAD} Tage (Von {today_str} bis {future_date})...")
 
-    # Nur Matches ab heute laden
+    # WICHTIG: Lade alle Matches im Zeitfenster von heute bis in 10 Tagen!
     response = supabase.table("market_odds") \
         .select("*") \
         .gte("event_date", today_str) \
+        .lte("event_date", future_date) \
         .execute()
     
     fixtures = response.data if response.data else []
-    print(f"📊 {len(fixtures)} Ansetzungen aus Supabase geladen. Filtere abgelaufene Spiele...")
+    print(f"📊 {len(fixtures)} Ansetzungen im {DAYS_AHEAD}-Tage-Fenster aus Supabase geladen.")
+
+    if len(fixtures) == 0:
+        print("⚠️ WARNUNG: Keine fixtures in der Tabelle 'market_odds' gefunden! Läuft dein Neo.bet-Scraper aktuell?")
+        return
 
     value_bets_to_insert = []
     skipped_count = 0
@@ -102,26 +108,17 @@ def analyze_and_save_value_bets():
         tournament = match.get("tournament_name", "Unbekanntes Turnier")
         event_date = match.get("event_date")
         event_time = match.get("event_time", "00:00")
-        event_status = match.get("event_status", "Pregame")
         odds_data = match.get("neobet_match_winner", {})
 
-        # 1. Bereits gestartete oder beendete Spiele konsequent überspringen
-        if event_status not in ["Pregame", "Not Started", "Scheduled"]:
-            skipped_count += 1
-            continue
-
-        # 2. Wenn das Match heute ist, prüfen ob die Startzeit bereits vorbei ist
-        if event_date == today_str and event_time and event_time < current_time_str:
-            skipped_count += 1
-            continue
-
         if not odds_data or "Home" not in odds_data or "Away" not in odds_data:
+            skipped_count += 1
             continue
 
         try:
             p1_odds = float(odds_data["Home"]["neobet"])
             p2_odds = float(odds_data["Away"]["neobet"])
         except (KeyError, TypeError, ValueError):
+            skipped_count += 1
             continue
 
         surface = get_surface_from_supabase(tournament)
@@ -129,9 +126,11 @@ def analyze_and_save_value_bets():
         stats_p2 = get_player_surface_stats(p2, surface)
 
         if not stats_p1 or not stats_p2:
+            skipped_count += 1
             continue
 
         if stats_p1["matches"] < MIN_MATCHES_ON_SURFACE or stats_p2["matches"] < MIN_MATCHES_ON_SURFACE:
+            skipped_count += 1
             continue
 
         fair_p1_market, fair_p2_market = devig_odds(p1_odds, p2_odds)
@@ -157,7 +156,7 @@ def analyze_and_save_value_bets():
 
         if chosen_pick:
             pick_name, odds, model_prob, market_prob, ev = chosen_pick
-            print(f"🎯 [NEW SIGNAL] @ {tournament} ({surface}) -> {pick_name} @ {odds} (EV: +{ev:.1%})")
+            print(f"🎯 [NEW SIGNAL] @ {tournament} ({surface}) | {event_date} -> {pick_name} @ {odds} (EV: +{ev:.1%})")
 
             value_bets_to_insert.append({
                 "event_key": event_key,
@@ -174,7 +173,7 @@ def analyze_and_save_value_bets():
                 "expected_value": round(ev, 4)
             })
 
-    print(f"ℹ️ {skipped_count} abgelaufene/gestartete Spiele übersprungen.")
+    print(f"ℹ️ {skipped_count} Datensätze ohne Quoten oder Historie übersprungen.")
 
     # In Supabase speichern
     if value_bets_to_insert:
@@ -190,7 +189,7 @@ def analyze_and_save_value_bets():
                 supabase.table("value_signals").insert(signal).execute()
         print("✅ Speichern abgeschlossen!")
     else:
-        print("ℹ️ Keine neuen anstehenden Value Bets gefunden.")
+        print("ℹ️ Keine Value Bets im 10-Tage-Fenster gefunden.")
 
 if __name__ == "__main__":
     analyze_and_save_value_bets()
